@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Station — Weather ETL Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #eef2f5;
+    --panel: #ffffff;
+    --ink: #16232e;
+    --muted: #5d7285;
+    --line: #d5dee5;
+    --casablanca: #c47a2c;
+    --paris: #33658a;
+    --tokyo: #b3403f;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Archivo", system-ui, sans-serif;
+    min-height: 100vh;
+    padding: 28px clamp(16px, 4vw, 48px) 60px;
+  }
+  .mono { font-family: "IBM Plex Mono", monospace; }
+
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  header h1 { font-size: clamp(1.5rem, 3vw, 2.1rem); font-weight: 800; letter-spacing: -0.02em; }
+  header .sub { color: var(--muted); font-size: .85rem; }
+  .updated { color: var(--muted); font-size: .78rem; margin-bottom: 24px; }
+
+  /* Cartes résumé */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 26px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px 18px; border-top: 4px solid var(--accent, var(--muted));
+  }
+  .card .city { font-weight: 700; font-size: .95rem; display:flex; justify-content: space-between; }
+  .card .city small { color: var(--muted); font-weight: 500; }
+  .card .temp { font-size: 2.6rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1.15; }
+  .card .range { color: var(--muted); font-size: .8rem; margin-bottom: 8px; }
+  .card .meta { display: flex; gap: 16px; font-size: .78rem; color: var(--muted); }
+  .card .meta b { color: var(--ink); font-weight: 600; }
+
+  /* Filtres */
+  .filters {
+    display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: end;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 18px; margin-bottom: 22px;
+  }
+  .filters label { display: block; font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 4px; }
+  .filters select, .filters input {
+    font: inherit; font-size: .85rem; padding: 7px 10px; border: 1px solid var(--line);
+    border-radius: 6px; background: #fbfcfd; color: var(--ink);
+  }
+  .filters button {
+    font: inherit; font-weight: 700; font-size: .85rem; padding: 8px 18px; cursor: pointer;
+    border: none; border-radius: 6px; background: var(--ink); color: #fff;
+  }
+  .filters button:hover { background: #2b4258; }
+  .filters button:focus-visible, .filters select:focus-visible, .filters input:focus-visible { outline: 2px solid var(--paris); outline-offset: 1px; }
+
+  /* Graphiques */
+  .charts { display: grid; grid-template-columns: 1fr; gap: 18px; }
+  @media (min-width: 1000px) { .charts { grid-template-columns: 1fr 1fr; } .charts .wide { grid-column: 1 / -1; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  .panel h2 { font-size: .95rem; font-weight: 700; margin-bottom: 10px; }
+  .panel .chart-wrap { position: relative; height: 320px; }
+  .empty { text-align: center; color: var(--muted); padding: 60px 10px; font-size: .9rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Station</h1>
+  <span class="sub">Moyennes journalières — Open-Meteo · ETL → SQLite → FastAPI</span>
+</header>
+<p class="updated mono" id="updated">chargement…</p>
+
+<section class="cards" id="cards"></section>
+
+<section class="filters">
+  <div>
+    <label for="citySel">Ville</label>
+    <select id="citySel"><option value="">Toutes les villes</option></select>
+  </div>
+  <div>
+    <label for="startInp">Du</label>
+    <input type="date" id="startInp" />
+  </div>
+  <div>
+    <label for="endInp">Au</label>
+    <input type="date" id="endInp" />
+  </div>
+  <button id="applyBtn">Appliquer</button>
+</section>
+
+<section class="charts">
+  <div class="panel wide">
+    <h2>Température moyenne (°C) — comparaison des villes</h2>
+    <div class="chart-wrap"><canvas id="tempChart"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Humidité moyenne (%)</h2>
+    <div class="chart-wrap"><canvas id="humChart"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Vent moyen (km/h)</h2>
+    <div class="chart-wrap"><canvas id="windChart"></canvas></div>
+  </div>
+</section>
+
+<script>
+const COLORS = { Casablanca: "#c47a2c", Paris: "#33658a", Tokyo: "#b3403f" };
+const FALLBACK = ["#6a8d73", "#7d5ba6", "#3f7d7a"];
+let charts = {};
+
+const colorFor = (city, i) => COLORS[city] || FALLBACK[i % FALLBACK.length];
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url} → HTTP ${r.status}`);
+  return r.json();
+}
+
+function groupByCity(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    if (!map.has(row.city)) map.set(row.city, []);
+    map.get(row.city).push(row);
+  }
+  return map;
+}
+
+function buildLineChart(canvasId, rows, field, unit) {
+  const byCity = groupByCity(rows);
+  const labels = [...new Set(rows.map(r => r.date))].sort();
+  const datasets = [...byCity.entries()].map(([city, cityRows], i) => {
+    const byDate = Object.fromEntries(cityRows.map(r => [r.date, r[field]]));
+    return {
+      label: city,
+      data: labels.map(d => byDate[d] ?? null),
+      borderColor: colorFor(city, i),
+      backgroundColor: colorFor(city, i),
+      spanGaps: true, tension: 0.3, pointRadius: 2.5, borderWidth: 2,
+    };
+  });
+
+  if (charts[canvasId]) charts[canvasId].destroy();
+  charts[canvasId] = new Chart(document.getElementById(canvasId), {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { labels: { usePointStyle: true, boxHeight: 6 } },
+        tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.formattedValue} ${unit}` } },
+      },
+      scales: {
+        x: { grid: { color: "#e6ecf1" } },
+        y: { grid: { color: "#e6ecf1" }, title: { display: true, text: unit } },
+      },
+    },
+  });
+}
+
+function renderCards(summary) {
+  const el = document.getElementById("cards");
+  if (!summary.length) {
+    el.innerHTML = '<div class="panel empty">Aucune donnée en base — lancez d\'abord l\'ETL : <code class="mono">python -m src.etl.pipeline</code></div>';
+    return;
+  }
+  el.innerHTML = summary.map((s, i) => `
+    <article class="card" style="--accent:${colorFor(s.city, i)}">
+      <div class="city">${s.city} <small class="mono">${s.date}</small></div>
+      <div class="temp">${s.temp_avg?.toFixed(1) ?? "–"}°</div>
+      <div class="range mono">min ${s.temp_min ?? "–"}° · max ${s.temp_max ?? "–"}°</div>
+      <div class="meta"><span>Humidité <b>${s.humidity_avg ?? "–"}%</b></span><span>Vent <b>${s.wind_avg ?? "–"} km/h</b></span></div>
+    </article>`).join("");
+}
+
+async function refresh() {
+  const city = document.getElementById("citySel").value;
+  const start = document.getElementById("startInp").value;
+  const end = document.getElementById("endInp").value;
+  const params = new URLSearchParams();
+  if (city) params.set("city", city);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+
+  const rows = await getJSON(`/api/weather?${params}`);
+  buildLineChart("tempChart", rows, "temp_avg", "°C");
+  buildLineChart("humChart", rows, "humidity_avg", "%");
+  buildLineChart("windChart", rows, "wind_avg", "km/h");
+  document.getElementById("updated").textContent =
+    `${rows.length} points · actualisé ${new Date().toLocaleTimeString("fr-FR")}`;
+}
+
+async function init() {
+  try {
+    const [cities, summary] = await Promise.all([getJSON("/api/cities"), getJSON("/api/summary")]);
+    const sel = document.getElementById("citySel");
+    for (const c of cities) sel.insertAdjacentHTML("beforeend", `<option value="${c}">${c}</option>`);
+    renderCards(summary);
+    await refresh();
+  } catch (err) {
+    document.getElementById("updated").textContent = `Erreur : ${err.message}`;
+  }
+}
+
+document.getElementById("applyBtn").addEventListener("click", refresh);
+init();
+</script>
+</body>
+</html>
